@@ -1,5 +1,6 @@
 import PIL.Image
 import PIL.ImageSequence
+import itertools
 import numpy as np
 import re
 import subprocess
@@ -9,7 +10,7 @@ from wand.color import Color
 from wand.drawing import Drawing
 from wand.image import BaseImage, Image
 
-from typing import Callable, Iterable, Tuple, TypeVar
+from typing import Callable, Iterable, Iterator, Tuple, TypeVar, Union
 
 T = TypeVar("T")
 
@@ -133,6 +134,28 @@ def preprocess(fp: str, out: str) -> None:
         wand_im.clone_frames()
         wand_im.save(filename=out)
     subprocess.run(gifsicle_commands)
+
+
+def random_bitstream(rng: np.random.Generator = None) -> Iterator[int]:
+    if rng is None:
+        rng = np.random.default_rng()
+    while True:
+        yield rng.integers(2)
+
+
+def rzl(data: Iterable[Union[int, str]], k: int) -> Iterator[str]:
+    res = iter([])
+    data = list(data)
+    for i in range(0, len(data), k):
+        d = "".join(str(chr) for chr in data[i:i+k])
+        res = itertools.chain(res, ("0" for _ in range(int(d, base=2))), "1")
+    return res
+
+
+def extract_rzl(data: Iterable[str], k: int) -> Iterable[str]:
+    data = "".join(data).split("1")
+    data.pop()
+    return itertools.chain(*[iter(format(len(i), f"0{k}b")) for i in data])
 
 
 # if __name__ == "__main__":
