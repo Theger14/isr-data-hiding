@@ -96,26 +96,33 @@ def preprocess(fp: str, out: str) -> None:
                 wand_frame, wand_clone = wand_im.clone_frame(frame_no)
                 cur_frame_no = frame_no * 2
                 clone_frame_no = cur_frame_no + 1
+                # print(frame_no)
                 trans_idx = pil_frame.info.get("transparency")
                 if trans_idx is not None:
-                    try:
-                        wand_prev_arr = np.array(queue[-1])
-                    except IndexError:
-                        pass
-                    else:
-                        magick_command[-1] = f"{fp}[{frame_no}]"
-                        magick_run = subprocess.run(magick_command, capture_output=True, encoding="utf-8")
-                        wand_cur_arr = np.array(wand_clone)
-                        modified = False
-                        with Color(pattern.search(magick_run.stdout)[0]) as trans_color:
+                    magick_command[-1] = f"{fp}[{frame_no}]"
+                    magick_run = subprocess.run(magick_command, capture_output=True, encoding="utf-8")
+                    trans_color_info = pattern.search(magick_run.stdout)[0]
+                    wand_cur_arr = np.array(wand_clone)
+                    background = wand_frame.background_color
+                    need_modification = True
+                    modified = False
+                    with Color(trans_color_info) as trans_color:
+                        try:
+                            wand_prev_arr = np.array(queue[-1])
+                        except IndexError:
+                            need_modification = background != trans_color
+                        if need_modification:
                             for i, row in enumerate(wand_frame):
                                 for j, col in enumerate(row):
                                     if col == trans_color:
-                                        wand_cur_arr[i, j] = wand_prev_arr[i, j]
+                                        try:
+                                            wand_cur_arr[i, j] = wand_prev_arr[i, j]
+                                        except NameError:
+                                            wand_cur_arr[i, j] = background
                                         modified = True
-                        if modified:
-                            with Image.from_array(wand_cur_arr) as wand_new:
-                                wand_clone.import_pixels(channel_map="RGBA", data=wand_new.export_pixels())
+                    if modified:
+                        with Image.from_array(wand_cur_arr) as wand_new:
+                            wand_clone.import_pixels(channel_map="RGBA", data=wand_new.export_pixels())
                     gifsicle_commands.extend((f"-t{trans_idx}", f"{out}", f"#{cur_frame_no}-{clone_frame_no}"))
                 else:
                     histogram = pil_frame.histogram()
@@ -131,7 +138,6 @@ def preprocess(fp: str, out: str) -> None:
         for i in range(len(wand_seq)):
             wand_seq[i] = queue.popleft()
         wand_seq.extend(queue)
-        wand_im.clone_frames()
         wand_im.save(filename=out)
     subprocess.run(gifsicle_commands)
 
@@ -158,10 +164,10 @@ def extract_rzl(data: Iterable[str], k: int) -> Iterable[str]:
     return itertools.chain(*[iter(format(len(i), f"0{k}b")) for i in data])
 
 
-# if __name__ == "__main__":
-#     fp = "Original/Draw1.gif"
-#     out = "out.gif"
-#     preprocess(fp, out)
+if __name__ == "__main__":
+    fp = "Original/Draw2.gif"
+    out = "out.gif"
+    preprocess(fp, out)
     # with GIFImage(filename=out) as im:
     #     seq = im.sequence
     #     for i in range(0, len(seq) - 1, 2):
