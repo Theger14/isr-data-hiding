@@ -9,6 +9,7 @@ from collections import deque
 from wand.color import Color
 from wand.drawing import Drawing
 from wand.image import BaseImage, Image
+from tqdm import tqdm, trange
 
 from typing import Callable, Iterable, Iterator, Tuple, TypeVar, Union
 
@@ -92,11 +93,10 @@ def preprocess(fp: str, out: str) -> None:
         with PIL.Image.open(fp) as pil_im:
             pil_iter = PIL.ImageSequence.Iterator(pil_im)
             pil_im_frames = (next(pil_iter) for _ in range(pil_im.n_frames - 1))
-            for frame_no, pil_frame in enumerate(pil_im_frames):
+            for frame_no, pil_frame in tqdm(enumerate(pil_im_frames), initial=1, total=pil_im.n_frames, desc="Preprocessing frames"):
                 wand_frame, wand_clone = wand_im.clone_frame(frame_no)
                 cur_frame_no = frame_no * 2
                 clone_frame_no = cur_frame_no + 1
-                print(frame_no)
                 trans_idx = pil_frame.info.get("transparency")
                 if trans_idx is not None:
                     magick_command[-1] = f"{fp}[{frame_no}]"
@@ -145,14 +145,13 @@ def preprocess(fp: str, out: str) -> None:
 def embed_data(fp: str, out: str, data: Iterable[str], k: int = None) -> str:
     data = iter(data)
     cur_data = deque()
-    gifsicle_commands = ["gifsicle"]
     magick_command = ["./magick", "identify", "-verbose", None]
     pattern = re.compile(r"(?<=Transparent color: )\w+(\(.+\))?")
     msg = []
     with Image(filename=fp) as wand_im:
         wand_seq = wand_im.sequence
         with PIL.Image.open(fp) as pil_im:
-            for frame_no in range(1, pil_im.n_frames, 2):
+            for frame_no in trange(1, pil_im.n_frames, 2, desc="Embedding data"):
                 magick_command[-1] = f"{fp}[{frame_no}]"
                 search_val = subprocess.run(magick_command, capture_output=True, encoding="utf-8").stdout
                 trans_color_name = pattern.search(search_val)[0]
@@ -163,18 +162,15 @@ def embed_data(fp: str, out: str, data: Iterable[str], k: int = None) -> str:
                     trans_arr = np.zeros(4, int)
                 prev_frame_no = frame_no - 1
                 pil_im.seek(prev_frame_no)
-                prev_trans_idx = pil_im.info.get("transparency")
-                pil_im.seek(frame_no)
-                cur_trans_idx = pil_im.info["transparency"]
+                prev_has_trans = "transparency" not in pil_im.info
                 with wand_seq[prev_frame_no].clone() as prev_frame:
                     prev_arr = np.array(prev_frame)
-                print(frame_no, trans_arr)
                 modified = False
                 with wand_seq[frame_no].clone() as cur_frame:
                     cur_arr = np.array(cur_frame)
                     for i, row in enumerate(cur_arr):
                         for j, _ in enumerate(row):
-                            if prev_trans_idx is None or not np.array_equal(prev_arr[i, j], trans_arr):
+                            if prev_has_trans or not np.array_equal(prev_arr[i, j], trans_arr):
                                 if k is not None:
                                     if not cur_data:
                                         newdata = [next(data) for _ in range(k)]
@@ -191,14 +187,8 @@ def embed_data(fp: str, out: str, data: Iterable[str], k: int = None) -> str:
                         with Image.from_array(cur_arr) as new_frame:
                             cur_frame.import_pixels(channel_map="RGBA", data=new_frame.export_pixels())
                         wand_seq[frame_no] = cur_frame
-                prev_trans_command = f"-t{prev_trans_idx}" if prev_trans_idx is not None else "--no-transparent"
-                gifsicle_commands.extend((prev_trans_command, f"{out}", f"#{prev_frame_no}", f"-t{cur_trans_idx}", f"{out}", f"#{frame_no}"))
-            pil_im.seek(pil_im.n_frames - 1)
-            trans_idx = pil_im.info.get("transparency")
-            last_command = f"-t{trans_idx}" if trans_idx is not None else "--no-transparent"
-            gifsicle_commands.extend((last_command, f"{out}", "#-1", "-o", f"{out}"))
         wand_im.save(filename=out)
-    subprocess.run(gifsicle_commands)
+    subprocess.run(["gifsicle", out, "-o", out])
     msg = "".join(msg)
     return msg[:-k] if cur_data else msg
 
@@ -210,7 +200,7 @@ def extract_payload(fp: str, k: int = None) -> str:
     with Image(filename=fp) as wand_im:
         wand_seq = wand_im.sequence
         with PIL.Image.open(fp) as pil_im:
-            for frame_no in range(1, pil_im.n_frames, 2):
+            for frame_no in trange(1, pil_im.n_frames, 2, desc="Extracting payload"):
                 magick_command[-1] = f"{fp}[{frame_no}]"
                 search_val = subprocess.run(magick_command, capture_output=True, encoding="utf-8").stdout
                 trans_color_name = pattern.search(search_val)[0]
@@ -221,15 +211,16 @@ def extract_payload(fp: str, k: int = None) -> str:
                     trans_arr = np.zeros(4, int)
                 prev_frame_no = frame_no - 1
                 pil_im.seek(prev_frame_no)
-                prev_no_trans = "transparency" not in pil_im.info
+                prev_no_trans = pil_im.info.get("transparency")
+                pil_im.seek(frame_no)
+                cur_no_trans = pil_im.info["transparency"]
                 with wand_seq[prev_frame_no].clone() as prev_frame:
                     prev_arr = np.array(prev_frame)
-                print(frame_no, trans_arr)
                 with wand_seq[frame_no].clone() as cur_frame:
                     cur_arr = np.array(cur_frame)
                 for i, row in enumerate(cur_arr):
                     for j, col in enumerate(row):
-                        if prev_no_trans or not np.array_equal(prev_arr[i, j], trans_arr):
+                        if prev_no_trans is None and prev_no_trans == cur_no_trans or not np.array_equal(prev_arr[i, j], trans_arr):
                             payload.append("0" if np.array_equal(col, trans_arr) else "1")
     if k is not None:
         while payload and payload[-1] == "0":
